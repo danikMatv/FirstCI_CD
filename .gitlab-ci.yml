@@ -1,0 +1,103 @@
+before_script:
+  - apt update && apt -y install jq
+  - mkdir ~/sf
+  - CLIURL=https://developer.salesforce.com/media/salesforce-cli/sf/channels/stable/sf-linux-x64.tar.xz
+  - wget -qO- $CLIURL | tar xJ -C ~/sf --strip-components 1
+  - export PATH=~/sf/bin:$PATH
+  - sf --version
+
+stages:
+  - validate
+  - UAT
+  - PROD
+  - PROD DEPLOY
+
+variables:
+  SF_ENV_ALIAS: "UAT_ORG" # or "PROD_ORG" for production
+  SF_AUTH_URL: $UAT_AUTH_URL # or $PROD_AUTH_URL for production
+
+.functions:
+  authenticate:
+    - echo "Authenticating with Salesforce org using auth URL..."
+    - echo "$SF_AUTH_URL" > auth-url.txt
+    - sf org login sfdx-url --sfdx-url-file auth-url.txt --alias "$SF_ENV_ALIAS"
+    - rm -f auth-url.txt
+  validate_metadata:
+    - echo "Start Source Validate to $SF_ENV_ALIAS"
+    - sf project deploy validate --source-dir force-app/ --target-org "$SF_ENV_ALIAS"
+    - echo "Source Validated completed to $SF_ENV_ALIAS"
+  deploy_metadata:
+    - echo "Start Source Deployment to $SF_ENV_ALIAS"
+    - sf project deploy start --source-dir force-app/ --target-org "$SF_ENV_ALIAS"
+    - echo "Source Deployment completed to $SF_ENV_ALIAS"
+  run_tests:
+    - echo "Start Run Tests to $SF_ENV_ALIAS"
+    - sf apex run test --synchronous --code-coverage --result-format human --target-org "$SF_ENV_ALIAS"
+    - echo "Run Tests completed to $SF_ENV_ALIAS"
+
+####################################################
+# Validate Sandbox
+####################################################
+validate-uat:
+  stage: validate
+  variables:
+    SF_ENV_ALIAS: "UAT_ORG"
+    SF_AUTH_URL: $UAT_AUTH_URL 
+  only:
+    variables:
+    - $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "uat"
+    refs:
+      - merge_requests
+  allow_failure: false
+  script:
+    - !reference [.functions, authenticate]
+    - !reference [.functions, validate_metadata]
+
+####################################################
+# Deploy to Sandbox
+####################################################
+deploy-uat:
+  stage: UAT
+  only:
+    - uat
+  allow_failure: false
+  variables:
+    SF_ENV_ALIAS: "UAT_ORG"
+    SF_AUTH_URL: $UAT_AUTH_URL 
+  script:
+    - !reference [.functions, authenticate]
+    - !reference [.functions, deploy_metadata]
+
+####################################################
+# Validate Production
+####################################################
+validate-prod:
+  stage: PROD
+  only:
+    variables:
+      - $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main"
+    refs:
+      - merge_requests
+  allow_failure: false
+  variables:
+    SF_ENV_ALIAS: "PROD_ORG"
+    SF_AUTH_URL: $PROD_AUTH_URL 
+  script:
+    - !reference [.functions, authenticate]
+    - !reference [.functions, validate_metadata]
+
+####################################################
+# Deploy to Production
+####################################################
+deploy-prod:
+  stage: PROD DEPLOY
+  only:
+    - "main"
+  when: manual
+  allow_failure: false
+  variables:
+    SF_ENV_ALIAS: "PROD_ORG"
+    SF_AUTH_URL: $PROD_AUTH_URL 
+  script:
+    - !reference [.functions, authenticate]
+    - !reference [.functions, deploy_metadata]
